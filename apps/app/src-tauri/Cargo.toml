@@ -23,7 +23,7 @@ serde = { version = "1", features = ["derive"] }
 tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-opener = "2"
 sysinfo = "0.30.5"
-candle-core = "0.3.3"
+candle-core = "0.8.0"
 
 [features]
 # by default Tauri runs in production mode
