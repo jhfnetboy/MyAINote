@@ -1,4 +1,6 @@
-# AutoAINote
+# MyAINote
+<img src="public/logo.png" width="150" alt="MyAINote Logo" />
+
 An AI auto note with saving on iCloud, cross platform: Mac, Windows, Linux, Android, iOS and Chrome Plugin.
 
 ## Features 1
@@ -22,6 +24,7 @@ An AI auto note with saving on iCloud, cross platform: Mac, Windows, Linux, Andr
 
 ## Usage
 - Open the app and input a URL, then click the button to scrape the content and save it to a md file.
+- Post andy picture or pdf, docs to the app, then click the button to scrape the content and save it to a md file.
 
 ## Plan
 1. RAG support for quick search with keywords.
