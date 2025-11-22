@@ -1,15 +1,40 @@
 <!DOCTYPE html>
 <html>
+
 <head>
+  <meta charset="UTF-8">
   <title>MyAINote Clipper</title>
   <link rel="stylesheet" href="styles.css">
 </head>
+
 <body>
   <div class="container">
-    <h1>MyAINote</h1>
-    <button id="saveBtn" class="btn-primary">Save Page</button>
+    <header>
+      <img src="icons/icon48.png" alt="Logo" class="logo">
+      <h1>MyAINote</h1>
+    </header>
+
+    <div class="content">
+      <div class="input-group">
+        <label for="title">Title</label>
+        <input type="text" id="title" placeholder="Page Title">
+      </div>
+
+      <div class="input-group">
+        <label for="url">URL</label>
+        <input type="text" id="url" placeholder="Page URL" readonly>
+      </div>
+
+      <div class="actions">
+        <button id="saveBtn" class="btn-primary">
+          <span class="icon">💾</span> Save to Note
+        </button>
+      </div>
+    </div>
+
     <div id="status" class="status"></div>
   </div>
   <script src="popup.js"></script>
 </body>
+
 </html>

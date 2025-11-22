@@ -151,6 +151,94 @@ pub fn run() {
     .plugin(tauri_plugin_opener::init())
     .manage(Database {})
     .invoke_handler(tauri::generate_handler![greet, calculate, start_process_monitoring, get_hardware_info, greet_with_ai])
+    .setup(|app| {
+        // Start the local HTTP server
+        tauri::async_runtime::spawn(async move {
+            start_server().await;
+        });
+        Ok(())
+    })
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
+}
+
+use axum::{
+    routing::{post, get},
+    Json, Router,
+    http::Method,
+};
+use tower_http::cors::{Any, CorsLayer};
+use std::fs;
+use std::path::PathBuf;
+
+#[derive(serde::Deserialize)]
+struct SaveNoteRequest {
+    title: String,
+    url: String,
+    html: String,
+}
+
+#[derive(serde::Serialize)]
+struct SaveNoteResponse {
+    status: String,
+    path: String,
+}
+
+async fn start_server() {
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([Method::GET, Method::POST])
+        .allow_headers(Any);
+
+    let app = Router::new()
+        .route("/save", post(save_note))
+        .route("/health", get(|| async { "OK" }))
+        .layer(cors);
+
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3030").await.unwrap();
+    println!("Server running on http://localhost:3030");
+    axum::serve(listener, app).await.unwrap();
+}
+
+async fn save_note(Json(payload): Json<SaveNoteRequest>) -> Json<SaveNoteResponse> {
+    println!("Received note: {}", payload.title);
+    
+    // Convert HTML to Markdown
+    let markdown_content = html2md::parse_html(&payload.html);
+    
+    // Add frontmatter
+    let date = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let final_content = format!(
+        "---\ntitle: \"{}\"\nurl: \"{}\"\ndate: \"{}\"\n---\n\n{}",
+        payload.title, payload.url, date, markdown_content
+    );
+
+    // Determine save path
+    // For now, save to a 'notes' directory in the user's home folder or app local data
+    // Using home_dir for simplicity in this phase
+    let home_dir = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let notes_dir = PathBuf::from(home_dir).join("MyAINote").join("notes");
+    
+    if !notes_dir.exists() {
+        fs::create_dir_all(&notes_dir).unwrap();
+    }
+
+    // Sanitize filename
+    let safe_title: String = payload.title.chars()
+        .map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' { c } else { '_' })
+        .collect();
+    let filename = format!("{}.md", safe_title.trim());
+    let file_path = notes_dir.join(&filename);
+
+    // Write to file
+    match fs::write(&file_path, final_content) {
+        Ok(_) => Json(SaveNoteResponse {
+            status: "success".to_string(),
+            path: file_path.to_string_lossy().to_string(),
+        }),
+        Err(e) => Json(SaveNoteResponse {
+            status: format!("error: {}", e),
+            path: "".to_string(),
+        }),
+    }
 }
