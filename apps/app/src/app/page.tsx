@@ -4,6 +4,7 @@ import Image from "next/image";
 import { useCallback, useState } from "react";
 import Link from "next/link";
 import { invoke } from "@tauri-apps/api/core";
+import { SearchNotes } from "@/components/SearchNotes";
 
 export default function Home() {
   const [aiResponse, setAiResponse] = useState("");
@@ -35,14 +36,14 @@ export default function Home() {
           </p>
           <div className="flex flex-col gap-4">
             <div className="flex gap-4">
-              <RoundedButton 
-                onClick={handleLogin} 
-                title="Login/Register" 
+              <RoundedButton
+                onClick={handleLogin}
+                title="Login/Register"
                 disabled={false}
               />
-              <RoundedButton 
-                onClick={callAI} 
-                title="Test Local AI" 
+              <RoundedButton
+                onClick={callAI}
+                title="Test Local AI"
                 disabled={false}
               />
             </div>
@@ -117,12 +118,14 @@ export default function Home() {
         <p className="max-w-2xl mx-auto mb-6">
           Join COS72, create your own community, incentivize user participation, and build a vibrant ecosystem.
         </p>
-        <RoundedButton 
-          onClick={handleLogin} 
+        <RoundedButton
+          onClick={handleLogin}
           title="Get Started Now"
           disabled={false}
         />
       </section>
+
+      <SearchNotes />
     </div>
   );
 }

@@ -3,6 +3,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 use tauri::Emitter;
 
+mod indexer;
+mod rag;
+mod embedding;
+
 #[tauri::command]
 fn greet() -> String {
   let now = SystemTime::now();
@@ -145,17 +149,49 @@ async fn start_process_monitoring(window: tauri::Window) -> Result<(), String> {
   Ok(())
 }
 
+#[tauri::command]
+async fn search_notes(query: String) -> Vec<rag::SearchResult> {
+    rag::search(&query).await
+}
+
+#[tauri::command]
+async fn chat_with_notes(query: String) -> String {
+    rag::chat(&query).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-  tauri::Builder::default()
-    .plugin(tauri_plugin_opener::init())
-    .manage(Database {})
-    .invoke_handler(tauri::generate_handler![greet, calculate, start_process_monitoring, get_hardware_info, greet_with_ai])
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .manage(Database {})
+        .invoke_handler(tauri::generate_handler![
+            greet, 
+            calculate, 
+            start_process_monitoring, 
+            get_hardware_info, 
+            greet_with_ai,
+            search_notes,
+            chat_with_notes
+        ])
     .setup(|app| {
         // Start the local HTTP server
         tauri::async_runtime::spawn(async move {
             start_server().await;
         });
+
+        // Start the Indexer
+        let home_dir = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let notes_dir = PathBuf::from(home_dir).join("MyAINote").join("notes");
+        
+        if !notes_dir.exists() {
+             let _ = fs::create_dir_all(&notes_dir);
+        }
+
+        let indexer = indexer::Indexer::new(notes_dir.clone());
+        tauri::async_runtime::spawn(async move {
+            indexer.start().await;
+        });
+
         Ok(())
     })
     .run(tauri::generate_context!())
