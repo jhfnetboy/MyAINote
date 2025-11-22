@@ -21,20 +21,74 @@ As of late 2025, Tauri v2 is stable and production-ready for mobile (iOS & Andro
     *   **Privacy**: All data stays local. The extension sends content *only* to the local Tauri server (localhost).
 
 ### Architecture Diagram
+
+#### 1. System Architecture (Component View)
 ```mermaid
 graph TD
-    UI[Frontend (Next.js/React)] <-->|IPC| Rust[Rust Core (Tauri)]
-    Rust <-->|FS| LocalDB[(LanceDB / SQLite)]
-    Rust <-->|Localhost API| Ext[Browser Extension]
-    Rust <-->|FFI/Binding| AI[Local AI Engine]
-    
-    subgraph "User Browser"
-    Ext -->|Read DOM| Page[Active Web Page]
+    subgraph "Browser Environment"
+        Ext[Chrome Extension]
+        Page["Web Page (DOM)"]
+        Ext -->|Read/Inject| Page
     end
 
-    subgraph "AI Engine"
-    AI -->|Inference| Model[Gemma / Llama]
+    subgraph "MyAINote App (Tauri)"
+        UI["Frontend (Next.js)"]
+        Core[Rust Core Backend]
+        UI <-->|IPC| Core
+        Ext <-->|HTTP/Localhost| Core
     end
+
+    subgraph "Storage Layer (Local)"
+        FS_MD["File System (.md Notes)"]
+        FS_Asset["File System (Assets/Images)"]
+        DB[("LanceDB Vector Index")]
+        Core -->|Read/Write| FS_MD
+        Core -->|Read/Write| FS_Asset
+        Core <-->|Query/Insert| DB
+    end
+```
+
+#### 2. Data Flow: Capture to Indexing (Sequence)
+```mermaid
+sequenceDiagram
+    participant User
+    participant Browser as Chrome Ext
+    participant App as Tauri App (Rust)
+    participant FS as File System
+    participant DB as LanceDB
+
+    User->>Browser: Click "Save" / Share
+    Browser->>Browser: Extract Readability & Images
+    Browser->>App: POST /save (HTML + Metadata)
+    App->>App: Convert HTML to Markdown
+    App->>FS: Save Images to assets/{hash}.jpg
+    App->>FS: Save Markdown to notes/{title}.md
+    
+    Note over App, DB: Background Indexing Process
+    App->>FS: Watch for File Changes
+    App->>App: Chunk Text & Generate Embeddings
+    App->>DB: Insert Vectors (Content + Image Captions)
+```
+
+#### 3. AI Inference Strategy (Hybrid Router)
+```mermaid
+graph TD
+    Query[User Query] --> RAG[Retrieve Context from LanceDB]
+    RAG --> Context[Assemble Prompt + Context]
+    Context --> Router{Router Decision}
+    
+    subgraph "Local Privacy Mode (Default)"
+        Router -->|Standard Task| LocalLLM["Gemma 2 (2B/9B)"]
+    end
+    
+    subgraph "Expert Mode (High IQ)"
+        Router -->|Complex Reasoning| CloudAPI["Cloud API (DeepSeek/Claude)"]
+        Router -->|Enterprise Local| LocalExpert["Llama 3 70B (Mac Studio)"]
+    end
+    
+    LocalLLM --> Response
+    CloudAPI --> Response
+    LocalExpert --> Response
 ```
 
 ## 2. Feature Implementation Strategy
@@ -62,23 +116,49 @@ graph TD
     3.  Extract key phrases or classify into categories.
     4.  Append YAML frontmatter to the Markdown file.
 
+## 3. Advanced Collection & Automation
+
+### Batch & Macro Scraping (Personal Crawler)
+*   **Goal**: Automate repetitive tasks (e.g., "Scrape these 10 URLs" or "Login, search for 'AI', and save top 5 results").
+*   **Architecture**: **App Orchestration + Extension Execution**.
+    *   **The App (Commander)**: Manages the "Task Queue" and stores "Recipes" (JSON-based rules for interaction).
+    *   **The Extension (Worker)**: Listens for commands from the App. It opens a background tab, executes the steps (goto URL -> wait for selector -> click -> input text -> extract), and returns the result.
+*   **Benefit**: Leverages the user's existing browser session (cookies/login) to bypass auth walls, unlike traditional headless crawlers.
+
+### Omni-Capture (System-Wide Integration)
+*   **Mobile (iOS/Android)**:
+    *   **Share Sheet**: Register MyAINote as a share target. Users can share Text, URLs, Images, or Files from *any* app (WeChat, Twitter, Gallery) directly to MyAINote.
+    *   **Implementation**: Tauri Mobile Intent Filters / Share Extensions.
+*   **Desktop (macOS/Windows)**:
+    *   **Context Menu / Services**: Add "Save to MyAINote" to the system right-click menu.
+    *   **Global Shortcut**: A global hotkey (e.g., `Cmd+Shift+S`) to capture the clipboard content or the currently active window's text.
+*   **Unified Inbox**: All captured items (from Batch or Share) go into a "Inbox" folder for AI processing (Auto-tagging/RAG indexing).
+
 ## 3. Personal Knowledge Base (PKB) & RAG
 
-### Storage & Indexing
-For a *personal* knowledge base in 2025, we need a solution that is **local-first**, **fast**, and **embedded** (no heavy Docker containers).
+### Storage Strategy: Hybrid Approach (File System + Vector DB)
+*   **Philosophy**: **"File System as the Source of Truth"**. We do *not* store heavy binary blobs (images, PDFs) in the database.
+*   **Structure**:
+    *   `~/MyAINote/notes/`: Markdown files (The content).
+    *   `~/MyAINote/assets/`: Binary files (Images, PDFs, Videos).
+        *   **De-duplication**: Files are renamed by their SHA-256 hash (e.g., `assets/images/a1b2...e4.png`). Same file saved twice = only 1 copy on disk.
+    *   `~/MyAINote/.db/`: LanceDB data (The index).
 
-*   **Vector Database**: **LanceDB**.
-    *   *Why?* It's written in Rust, embedded (runs in-process), extremely fast, and handles vector search + raw data storage. Perfect for Tauri.
-    *   *Alternative*: **SurrealDB** (embedded mode) if graph relationships are needed later.
-*   **Indexing Pipeline**:
-    *   Watch file changes (Rust `notify` crate).
-    *   Chunk Markdown files (Rust `text-splitter`).
-    *   Generate embeddings (Rust `candle` with `all-MiniLM-L6-v2` or similar small model).
-    *   Store in LanceDB.
+### Multi-modal Indexing & Retrieval
+How do we search for a video or image? We convert everything to **Text/Vectors**.
+
+| Content Type | Processing Pipeline | Stored in LanceDB |
+| :--- | :--- | :--- |
+| **Text (MD)** | Chunking -> Embedding | Vector + File Path |
+| **Image** | **OCR** (Text in img) + **Vision Model** (Description: "A cat sitting on a laptop") | Vector of (OCR + Description) |
+| **PDF** | Text Extraction (per page) | Vector of Page Content |
+| **Video/Audio**| **Whisper** (Speech-to-Text) -> Transcript | Vector of Transcript |
+
+*   **Retrieval**: When user searches "cat coding", the vector search finds the *Image Description* vector, and the UI shows the actual image from the `assets/` folder.
 
 ### RAG (Retrieval-Augmented Generation)
 *   **Query**: User asks a question.
-*   **Retrieval**: Search LanceDB for top-k relevant chunks.
+*   **Retrieval**: Search LanceDB for top-k relevant chunks (Text, Image Captions, PDF pages).
 *   **Generation**: Feed chunks + query to the Local LLM (Gemma).
 
 ## 4. AI Model Strategy (2025 Context)
@@ -95,7 +175,39 @@ For a *personal* knowledge base in 2025, we need a solution that is **local-firs
     *   **GPU Acceleration**: Metal (Mac), CUDA (Windows/Linux) supported by `candle`.
 *   **Mobile (iOS/Android)**:
     *   **Google MediaPipe LLM Inference**: The official, highly optimized path for Gemma on mobile. Access via Tauri Plugin (write a small Swift/Kotlin wrapper to expose it to Rust/JS).
+    *   **Google MediaPipe LLM Inference**: The official, highly optimized path for Gemma on mobile. Access via Tauri Plugin (write a small Swift/Kotlin wrapper to expose it to Rust/JS).
+    *   **Google MediaPipe LLM Inference**: The official, highly optimized path for Gemma on mobile. Access via Tauri Plugin (write a small Swift/Kotlin wrapper to expose it to Rust/JS).
     *   *Alternative*: **MLC-LLM** if more control is needed.
+
+### Deep Chat & Expert Mode (Hybrid Intelligence)
+*   **The Challenge**: Local models (2B/9B) are great for privacy and speed but may lack the "IQ" for complex, multi-step reasoning over large amounts of data.
+*   **Solution**: **Hybrid Mode**.
+    *   **Standard Mode (Local)**: Uses **Gemma 2 (9B/2B)**. Handles 90% of queries (Search, Summarization, Q&A). **100% Private.**
+    *   **Expert Mode (Cloud API)**: User can optionally configure an API Key (e.g., **DeepSeek-V3**, **Claude 3.5**, **OpenAI**).
+        *   *Use Case*: "Synthesize a new theory based on my last 50 notes about DeFi."
+        *   *Why?* Cloud models have larger context windows (128k+) and stronger reasoning capabilities for "connecting the dots" across complex domains.
+*   **"Expert" Definition**: Your "Second Brain" becomes an expert not just because of the model, but because it has **access to your unique data** (Context) + **High-IQ Reasoning** (Model).
+
+### Enterprise / On-Premise Mode (Local Expert)
+*   **Scenario**: Strict data privacy (Commercial Secrets) + Need for "Expert" level reasoning.
+*   **Solution**: Run large "Expert" models (70B+) locally.
+*   **Hardware Requirements**:
+    *   **Apple Silicon**: Mac Studio / MacBook Pro with **M2/M3 Max or Ultra** (64GB - 128GB Unified Memory).
+        *   *Why?* Unified memory allows loading 70B models (approx. 40GB RAM at 4-bit quantization) efficiently.
+    *   **PC / Linux**: Dual RTX 3090/4090 (24GB x 2) or A6000.
+*   **Recommended Models**:
+    *   **Llama 3 70B (Quantized)**: The open-weights standard for high-level reasoning.
+    *   **Qwen 2.5 72B**: Excellent coding and multi-lingual capabilities.
+    *   **DeepSeek-V2/V3 (Lite/Distilled)**: If available for local deployment.
+
+### Deep Chat & Expert Mode (Hybrid Intelligence)
+*   **The Challenge**: Local models (2B/9B) are great for privacy and speed but may lack the "IQ" for complex, multi-step reasoning over large amounts of data.
+*   **Solution**: **Hybrid Mode**.
+    *   **Standard Mode (Local)**: Uses **Gemma 2 (9B/2B)**. Handles 90% of queries (Search, Summarization, Q&A). **100% Private.**
+    *   **Expert Mode (Cloud API)**: User can optionally configure an API Key (e.g., **DeepSeek-V3**, **Claude 3.5**, **OpenAI**).
+        *   *Use Case*: "Synthesize a new theory based on my last 50 notes about DeFi."
+        *   *Why?* Cloud models have larger context windows (128k+) and stronger reasoning capabilities for "connecting the dots" across complex domains.
+*   **"Expert" Definition**: Your "Second Brain" becomes an expert not just because of the model, but because it has **access to your unique data** (Context) + **High-IQ Reasoning** (Model).
 
 ## 5. Summary of Tech Stack
 
@@ -144,21 +256,75 @@ For a *personal* knowledge base in 2025, we need a solution that is **local-firs
     *   **优势**: 使用用户 **现有的 Chrome 配置文件** (Cookie, 会话)。无需重新登录小红书等网站。
     *   **隐私**: 所有数据保留在本地。插件仅将内容发送到本地 Tauri 服务器 (localhost)。
 
-### 架构图
+### 架构图 (Architecture Diagrams)
+
+#### 1. 系统架构 (System Architecture)
 ```mermaid
 graph TD
-    UI[前端 (Next.js/React)] <-->|IPC| Rust[Rust 核心 (Tauri)]
-    Rust <-->|FS| LocalDB[(LanceDB / SQLite)]
-    Rust <-->|Localhost API| Ext[浏览器插件]
-    Rust <-->|FFI/Binding| AI[本地 AI 引擎]
-    
-    subgraph "用户浏览器"
-    Ext -->|读取 DOM| Page[当前网页]
+    subgraph "Browser Environment (浏览器环境)"
+        Ext[Chrome Extension]
+        Page["Web Page (DOM)"]
+        Ext -->|Read/Inject| Page
     end
 
-    subgraph "AI 引擎"
-    AI -->|推理| Model[Gemma / Llama]
+    subgraph "MyAINote App (Tauri)"
+        UI["Frontend (Next.js)"]
+        Core[Rust Core Backend]
+        UI <-->|IPC| Core
+        Ext <-->|HTTP/Localhost| Core
     end
+
+    subgraph "Storage Layer (本地存储)"
+        FS_MD["File System (.md Notes)"]
+        FS_Asset["File System (Assets/Images)"]
+        DB[("LanceDB Vector Index")]
+        Core -->|Read/Write| FS_MD
+        Core -->|Read/Write| FS_Asset
+        Core <-->|Query/Insert| DB
+    end
+```
+
+#### 2. 数据流: 采集到索引 (Data Flow)
+```mermaid
+sequenceDiagram
+    participant User as 用户
+    participant Browser as Chrome 插件
+    participant App as Tauri App (Rust)
+    participant FS as 文件系统
+    participant DB as LanceDB (索引)
+
+    User->>Browser: 点击 "保存" / 分享
+    Browser->>Browser: 提取正文 & 图片
+    Browser->>App: POST /save (HTML + 元数据)
+    App->>App: HTML 转 Markdown
+    App->>FS: 保存图片到 assets/{hash}.jpg
+    App->>FS: 保存 Markdown 到 notes/{title}.md
+    
+    Note over App, DB: 后台索引进程
+    App->>FS: 监听文件变更
+    App->>App: 文本分块 & 生成向量 (Embedding)
+    App->>DB: 写入向量 (文本 + 图片描述)
+```
+
+#### 3. AI 推理策略 (混合路由)
+```mermaid
+graph TD
+    Query[用户提问] --> RAG[从 LanceDB 检索上下文]
+    RAG --> Context[组装 Prompt + 上下文]
+    Context --> Router{路由决策}
+    
+    subgraph "本地隐私模式 (默认)"
+        Router -->|标准任务| LocalLLM["Gemma 2 (2B/9B)"]
+    end
+    
+    subgraph "专家模式 (高智商)"
+        Router -->|复杂推理| CloudAPI["云端 API (DeepSeek/Claude)"]
+        Router -->|企业本地版| LocalExpert["Llama 3 70B (Mac Studio)"]
+    end
+    
+    LocalLLM --> 响应
+    CloudAPI --> 响应
+    LocalExpert --> 响应
 ```
 
 ## 2. 功能实现策略
@@ -186,23 +352,49 @@ graph TD
     3.  提取关键短语或分类到类别。
     4.  将 YAML frontmatter (元数据) 追加到 Markdown 文件头部。
 
+## 3. 高级采集与自动化 (Advanced Collection)
+
+### 批量与宏任务 (个人爬虫)
+*   **目标**: 自动化重复任务 (例如 "抓取这 10 个 URL" 或 "登录某站，搜索关键词，保存前 5 条结果")。
+*   **架构**: **App 指挥 + 插件执行**。
+    *   **App (指挥官)**: 维护 "任务队列 (Task Queue)" 和 "采集规则 (Recipes)" (基于 JSON 的交互脚本)。
+    *   **插件 (执行者)**: 监听 App 指令。它在后台标签页打开网页，执行步骤 (跳转 -> 等待元素 -> 点击 -> 输入 -> 提取)，并将结果回传。
+*   **优势**: 直接复用用户浏览器的登录态 (Cookie)，轻松绕过权限验证，优于传统的无头爬虫。
+
+### 全域采集 (系统级集成)
+*   **移动端 (iOS/Android)**:
+    *   **分享面板 (Share Sheet)**: 将 MyAINote 注册为系统分享目标。用户可以从 *任何* App (微信、推特、相册) 选中文字、图片、链接或文件，直接 "分享" 进 MyAINote。
+    *   **实现**: Tauri Mobile Intent Filters / Share Extensions。
+*   **桌面端 (macOS/Windows)**:
+    *   **右键菜单 / 服务**: 在系统右键菜单中添加 "发送到 MyAINote"。
+    *   **全局快捷键**: 支持全局热键 (如 `Cmd+Shift+S`) 一键保存剪贴板内容。
+*   **统一收件箱 (Inbox)**: 所有来源 (批量抓取或分享) 的内容首先进入 "收件箱"，等待 AI 进行自动化处理 (打标签/RAG 索引)。
+
 ## 3. 个人知识库 (PKB) & RAG
 
-### 存储与索引
-对于 2025 年的 *个人* 知识库，我们需要一个 **本地优先 (local-first)**、**快速** 且 **嵌入式 (embedded)** 的解决方案 (无需繁重的 Docker 容器)。
+### 存储策略: 混合模式 (文件系统 + 向量库)
+*   **理念**: **"文件系统即真理 (File System as Source of Truth)"**。我们 **不** 把沉重的二进制文件 (图片, PDF) 存入数据库。
+*   **结构**:
+    *   `~/MyAINote/notes/`: Markdown 文件 (内容本体)。
+    *   `~/MyAINote/assets/`: 二进制资源 (图片, PDF, 视频)。
+        *   **去重**: 文件名使用 SHA-256 哈希值 (如 `assets/images/a1b2...e4.png`)。相同文件只存一份。
+    *   `~/MyAINote/.db/`: LanceDB 数据 (索引)。
 
-*   **向量数据库**: **LanceDB**。
-    *   *原因*: 它是用 Rust 编写的，嵌入式的 (进程内运行)，速度极快，并且可以处理向量搜索 + 原始数据存储。非常适合 Tauri。
-    *   *替代方案*: **SurrealDB** (嵌入模式)，如果后续需要图关系功能。
-*   **索引流程**:
-    *   监听文件变更 (Rust `notify` crate)。
-    *   对 Markdown 文件进行分块 (Rust `text-splitter`)。
-    *   生成嵌入向量 (Rust `candle` 配合 `all-MiniLM-L6-v2` 或类似小模型)。
-    *   存储到 LanceDB。
+### 多模态索引与检索 (Multi-modal Indexing)
+如何搜索视频或图片？我们将一切转化为 **文本/向量**。
+
+| 内容类型 | 处理流水线 | 存入 LanceDB 的内容 |
+| :--- | :--- | :--- |
+| **文本 (MD)** | 分块 (Chunking) -> Embedding | 向量 + 文件路径 |
+| **图片** | **OCR** (提取文字) + **视觉模型** (描述: "一只猫坐在电脑上") | (OCR + 描述) 的向量 |
+| **PDF** | 文本提取 (按页) | 页面内容的向量 |
+| **视频/音频**| **Whisper** (语音转文字) -> 字幕 | 字幕内容的向量 |
+
+*   **检索**: 当用户搜索 "猫写代码" 时，向量搜索匹配到 **图片描述** 的向量，UI 展示 `assets/` 目录下的原始图片。
 
 ### RAG (检索增强生成)
 *   **查询**: 用户提出问题。
-*   **检索**: 在 LanceDB 中搜索前 k 个相关块 (Chunks)。
+*   **检索**: 在 LanceDB 中搜索前 k 个相关块 (文本段落, 图片描述, PDF 页面)。
 *   **生成**: 将相关块 + 查询输入给本地 LLM (Gemma)。
 
 ## 4. AI 模型策略 (2025 背景)
@@ -219,7 +411,39 @@ graph TD
     *   **GPU 加速**: `candle` 支持 Metal (Mac) 和 CUDA (Windows/Linux)。
 *   **移动端 (iOS/Android)**:
     *   **Google MediaPipe LLM Inference**: 移动端运行 Gemma 的官方、高度优化路径。通过 Tauri 插件访问 (编写少量 Swift/Kotlin 包装器将其暴露给 Rust/JS)。
+    *   **Google MediaPipe LLM Inference**: 移动端运行 Gemma 的官方、高度优化路径。通过 Tauri 插件访问 (编写少量 Swift/Kotlin 包装器将其暴露给 Rust/JS)。
+    *   **Google MediaPipe LLM Inference**: 移动端运行 Gemma 的官方、高度优化路径。通过 Tauri 插件访问 (编写少量 Swift/Kotlin 包装器将其暴露给 Rust/JS)。
     *   *替代方案*: **MLC-LLM**，如果需要更多控制权。
+
+### 深度对话与专家模式 (混合智能)
+*   **挑战**: 本地模型 (2B/9B) 在隐私和速度上很棒，但在处理大量数据的复杂多步推理时，"智商" (IQ) 可能不足。
+*   **解决方案**: **混合模式 (Hybrid Mode)**。
+    *   **标准模式 (本地)**: 使用 **Gemma 2 (9B/2B)**。处理 90% 的查询 (搜索、摘要、简单问答)。**100% 隐私安全。**
+    *   **专家模式 (云端 API)**: 用户可以自选配置 API Key (例如 **DeepSeek-V3**, **Claude 3.5**, **OpenAI**)。
+        *   *场景*: "基于我过去关于 DeFi 的 50 篇笔记，综合分析并构思一个新的投资理论。"
+        *   *优势*: 云端模型拥有超长上下文 (128k+) 和更强的逻辑推理能力，擅长在复杂领域 "连接点滴"。
+*   **"专家" 的定义**: 你的 "第二大脑" 之所以是专家，不仅因为模型强，更因为 **它拥有你的数据** (上下文) + **高智商推理** (模型)。
+
+### 企业 / 本地部署模式 (Local Expert)
+*   **场景**: 极高的商业机密保护需求 + 需要 "专家级" 的分析能力。
+*   **解决方案**: 在本地运行大型 "专家" 模型 (70B+)。
+*   **硬件配置建议**:
+    *   **Apple Silicon**: Mac Studio / MacBook Pro 搭载 **M2/M3 Max 或 Ultra** 芯片 (64GB - 128GB 统一内存)。
+        *   *原因*: 统一内存架构允许低成本加载 70B 模型 (4-bit 量化约需 40GB 显存/内存)。
+    *   **PC / Linux**: 双路 RTX 3090/4090 (24GB x 2) 或 A6000 专业卡。
+*   **推荐模型**:
+    *   **Llama 3 70B (量化版)**: 目前开源界推理能力的标杆。
+    *   **Qwen 2.5 72B**: 极佳的代码和多语言能力。
+    *   **DeepSeek-V2/V3 (Lite/Distilled)**: 如果支持本地部署。
+
+### 深度对话与专家模式 (混合智能)
+*   **挑战**: 本地模型 (2B/9B) 在隐私和速度上很棒，但在处理大量数据的复杂多步推理时，"智商" (IQ) 可能不足。
+*   **解决方案**: **混合模式 (Hybrid Mode)**。
+    *   **标准模式 (本地)**: 使用 **Gemma 2 (9B/2B)**。处理 90% 的查询 (搜索、摘要、简单问答)。**100% 隐私安全。**
+    *   **专家模式 (云端 API)**: 用户可以自选配置 API Key (例如 **DeepSeek-V3**, **Claude 3.5**, **OpenAI**)。
+        *   *场景*: "基于我过去关于 DeFi 的 50 篇笔记，综合分析并构思一个新的投资理论。"
+        *   *优势*: 云端模型拥有超长上下文 (128k+) 和更强的逻辑推理能力，擅长在复杂领域 "连接点滴"。
+*   **"专家" 的定义**: 你的 "第二大脑" 之所以是专家，不仅因为模型强，更因为 **它拥有你的数据** (上下文) + **高智商推理** (模型)。
 
 ## 5. 技术栈总结
 
@@ -231,7 +455,9 @@ graph TD
 | **复杂抓取** | **浏览器插件 (Browser Extension)** | 使用用户会话，隐私安全。 |
 | **向量数据库** | **LanceDB** | 嵌入式，Rust 原生，零配置。 |
 | **AI 推理** | **Candle (桌面) / MediaPipe (移动)** | 各平台最佳性能。 |
+| **AI 推理** | **Candle (桌面) / MediaPipe (移动)** | 各平台最佳性能。 |
 | **LLM** | **Gemma 2/3 (2B/4B)** | 最先进的小型模型。 |
+| **专家模式** | **DeepSeek / Claude (API)** | 可选云端增强，用于深度推理。 |
 
 ## 6. 隐私与安全 (仅限本地)
 *   **零数据泄露**: 所有数据 (笔记、图片、向量索引) 均存储在本地文件系统中。
