@@ -1,5 +1,5 @@
 # MyAINote
-<img src="public/logo.png" width="400" alt="MyAINote Logo" />
+<img src="public/logo.png" width="400" alt="MyAINote Logo" align="center" />
 
 An AI auto note with saving on iCloud, cross platform: Mac, Windows, Linux, Android, iOS and Chrome Plugin.
 

@@ -1,40 +1,15 @@
 {
-  "name": "tauri-nextjs-template",
+  "name": "myainote-monorepo",
   "private": true,
-  "version": "0.3.4",
-  "type": "module",
   "scripts": {
-    "dev": "next dev --turbopack",
-    "build": "next build",
-    "start": "next start",
-    "lint": "biome check src/ && next lint",
-    "tauri": "tauri"
-  },
-  "dependencies": {
-    "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-opener": "^2.2.6",
-    "next": "^15.3.2",
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "dev": "pnpm --filter @myainote/app dev",
+    "build": "pnpm --filter @myainote/app build",
+    "tauri": "pnpm --filter @myainote/app tauri",
+    "desktop": "pnpm --filter @myainote/app desktop",
+    "lint": "pnpm -r lint"
   },
   "devDependencies": {
-    "@biomejs/biome": "^1.9.4",
-    "@eslint/eslintrc": "^3.3.1",
-    "@eslint/js": "^9.27.0",
-    "@next/eslint-plugin-next": "^15.3.2",
-    "@tailwindcss/postcss": "^4.1.7",
-    "@tauri-apps/cli": "^2",
-    "@types/node": "^22.15.19",
-    "@types/react": "^19.1.4",
-    "@types/react-dom": "^19.1.5",
-    "@typescript-eslint/eslint-plugin": "^8.32.1",
-    "@typescript-eslint/parser": "^8.32.1",
-    "@vitejs/plugin-react": "^4.4.1",
-    "eslint": "^9.21.0",
-    "eslint-config-next": "^15.3.2",
-    "eslint-plugin-react-hooks": "^5.2.0",
-    "tailwindcss": "^4.1.7",
-    "typescript": "~5.8.3",
-    "typescript-eslint": "^8.32.1"
-  }
+    "typescript": "^5.0.0"
+  },
+  "packageManager": "pnpm@10.6.3+sha512.bb45e34d50a9a76e858a95837301bfb6bd6d35aea2c5d52094fa497a467c43f5c440103ce2511e9e0a2f89c3d6071baac3358fc68ac6fb75e2ceb3d2736065e6"
 }
