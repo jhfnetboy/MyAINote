@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize)]
 pub struct SearchResult {
@@ -8,59 +10,52 @@ pub struct SearchResult {
     pub content_snippet: String,
 }
 
-use lancedb::connect;
-use futures::TryStreamExt;
-use arrow_array::RecordBatch;
-
 pub async fn search(query: &str) -> Vec<SearchResult> {
     println!("Searching for: {}", query);
     
     let home_dir = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let db_path = format!("{}/MyAINote/.db", home_dir);
-    let uri = format!("data/{}", db_path);
+    let store_path = PathBuf::from(home_dir).join("MyAINote").join("vectors.json");
 
     // Generate Embedding for query (Size 384)
     let query_vector = crate::embedding::simple_embed(query);
 
-    let Ok(db) = connect(&uri).execute().await else {
+    if !store_path.exists() {
         return vec![];
-    };
-
-    let Ok(table) = db.open_table("notes").execute().await else {
-        return vec![];
-    };
-
-    // Perform Vector Search
-    let results = table
-        .query()
-        .nearest_to(&query_vector)
-        .limit(5)
-        .execute()
-        .await;
-
-    match results {
-        Ok(mut stream) => {
-            let mut search_results = Vec::new();
-            while let Ok(Some(batch)) = stream.try_next().await {
-                // Extract data from batch
-                // This requires casting columns. 
-                // For now, let's just return a mock result if we found something
-                if batch.num_rows() > 0 {
-                     search_results.push(SearchResult {
-                        title: "Found Note".to_string(),
-                        path: "path/to/note.md".to_string(),
-                        score: 0.99,
-                        content_snippet: "Content from LanceDB...".to_string(),
-                    });
-                }
-            }
-            search_results
-        }
-        Err(e) => {
-            println!("Search error: {:?}", e);
-            vec![]
-        }
     }
+
+    let data = match fs::read_to_string(&store_path) {
+        Ok(d) => d,
+        Err(_) => return vec![],
+    };
+
+    let store: crate::indexer::VectorStore = match serde_json::from_str(&data) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+
+    let mut results: Vec<SearchResult> = store.records.iter().map(|record| {
+        // Cosine Similarity
+        let dot_product: f32 = record.vector.iter().zip(&query_vector).map(|(a, b)| a * b).sum();
+        let norm_a: f32 = record.vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let norm_b: f32 = query_vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let score = if norm_a > 0.0 && norm_b > 0.0 {
+            dot_product / (norm_a * norm_b)
+        } else {
+            0.0
+        };
+
+        SearchResult {
+            title: record.filename.clone(),
+            path: record.filename.clone(), // In real app, full path
+            score,
+            content_snippet: record.content.chars().take(200).collect(),
+        }
+    }).collect();
+
+    // Sort by score descending
+    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+
+    results.into_iter().take(5).collect()
 }
 
 pub async fn chat(query: &str) -> String {

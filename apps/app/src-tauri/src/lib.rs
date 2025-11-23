@@ -6,6 +6,7 @@ use tauri::Emitter;
 mod indexer;
 mod rag;
 mod embedding;
+mod ocr;
 
 #[tauri::command]
 fn greet() -> String {
