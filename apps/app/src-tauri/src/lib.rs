@@ -7,6 +7,8 @@ mod indexer;
 mod rag;
 mod embedding;
 mod ocr;
+mod audio;
+mod transcriber;
 
 #[tauri::command]
 fn greet() -> String {
@@ -160,11 +162,69 @@ async fn chat_with_notes(query: String) -> String {
     rag::chat(&query).await
 }
 
+#[tauri::command]
+async fn start_recording(state: tauri::State<'_, AudioState>) -> Result<(), String> {
+    let home_dir = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let audio_dir = std::path::PathBuf::from(home_dir).join("MyAINote").join("audio");
+    if !audio_dir.exists() {
+        std::fs::create_dir_all(&audio_dir).map_err(|e| e.to_string())?;
+    }
+    
+    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+    let filename = format!("recording_{}.wav", timestamp);
+    let path = audio_dir.join(&filename);
+    
+    // Store the path in the state so we know what to transcribe later
+    *state.current_file.lock().unwrap() = Some(path.clone());
+
+    state.recorder.start_recording(path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn stop_recording(state: tauri::State<'_, AudioState>, app_handle: tauri::AppHandle) -> Result<String, String> {
+    state.recorder.stop_recording().map_err(|e| e.to_string())?;
+    
+    let path_opt = state.current_file.lock().unwrap().take();
+    if let Some(path) = path_opt {
+        // Transcribe
+        let transcriber = crate::transcriber::Transcriber::new();
+        let text = transcriber.transcribe(&path).map_err(|e| e.to_string())?;
+        
+        // Save as Note
+        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let note_title = format!("Voice Note {}", timestamp);
+        let note_content = format!(
+            "---\ntitle: {}\ndate: {}\ntype: voice_note\naudio_file: {}\n---\n\n{}\n\n[Audio File]: {}", 
+            note_title, timestamp, path.to_string_lossy(), text, path.to_string_lossy()
+        );
+        
+        let home_dir = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let notes_dir = std::path::PathBuf::from(home_dir).join("MyAINote").join("notes");
+        let note_filename = format!("voice_note_{}.md", chrono::Local::now().format("%Y%m%d_%H%M%S"));
+        let note_path = notes_dir.join(note_filename);
+        
+        std::fs::write(note_path, note_content).map_err(|e| e.to_string())?;
+        
+        return Ok(text);
+    }
+    
+    Ok("No recording found".to_string())
+}
+
+struct AudioState {
+    recorder: crate::audio::AudioRecorder,
+    current_file: std::sync::Mutex<Option<std::path::PathBuf>>,
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(AudioState {
+            recorder: crate::audio::AudioRecorder::new(),
+            current_file: std::sync::Mutex::new(None),
+        })
         .plugin(tauri_plugin_opener::init())
-        .manage(Database {})
         .invoke_handler(tauri::generate_handler![
             greet, 
             calculate, 
@@ -172,23 +232,31 @@ pub fn run() {
             get_hardware_info, 
             greet_with_ai,
             search_notes,
-            chat_with_notes
+            chat_with_notes,
+            start_recording,
+            stop_recording
         ])
     .setup(|app| {
+        let _app = app.handle();
+        
         // Start the local HTTP server
         tauri::async_runtime::spawn(async move {
-            start_server().await;
+            let app = axum::Router::new()
+                .route("/save", axum::routing::post(save_note))
+                .layer(tower_http::cors::CorsLayer::permissive());
+            let listener = tokio::net::TcpListener::bind("0.0.0.0:3030").await.unwrap();
+            axum::serve(listener, app).await.unwrap();
         });
 
         // Start the Indexer
         let home_dir = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        let notes_dir = PathBuf::from(home_dir).join("MyAINote").join("notes");
+        let notes_dir = std::path::PathBuf::from(home_dir).join("MyAINote").join("notes");
         
         if !notes_dir.exists() {
-             let _ = fs::create_dir_all(&notes_dir);
+             let _ = std::fs::create_dir_all(&notes_dir);
         }
 
-        let indexer = indexer::Indexer::new(notes_dir.clone());
+        let indexer = crate::indexer::Indexer::new(notes_dir);
         tauri::async_runtime::spawn(async move {
             indexer.start().await;
         });

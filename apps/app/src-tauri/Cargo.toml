@@ -40,6 +40,8 @@ rten = "0.4"
 rten-tensor = "0.4"
 image = "0.24"
 anyhow = "1.0"
+cpal = "0.15"
+hound = "3.5"
 
 
 
